@@ -1,9 +1,9 @@
 CC		=  gcc
-CFLAGS	+= -ggdb -std=c99 -fno-omit-frame-pointer -Wall -Werror -pedantic -O0
+CFLAGS	+= -ggdb -std=c99 -fsanitize=address,undefined -fno-omit-frame-pointer -Wall -Werror -pedantic -O0
 LIBS    = -lpthread
 INCLUDES	= -I. -D_POSIX_C_SOURCE=200809L
-LDFLAGS 	= -L.
-TARGETS = object_store example_client
+LDFLAGS 	= -L. -lasan -lubsan
+TARGETS = object_store test_client
 
 
 .PHONY: all clean cleanall
@@ -22,7 +22,7 @@ object_store: object_store.c signal_handler.o connection_handler.o server_worker
 
 connection_handler.o: server_worker.o utils.o
 
-example_client: example_client.c access_library.o utils.o
+test_client: test_client.c access_library.o utils.o
 	$(CC) $(CCFLAGS) $(INCLUDES) $(OPTFLAGS) $(LDFLAGS) -o $@ $^ $(LIBS)
 
 

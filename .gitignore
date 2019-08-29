@@ -1,3 +1,7 @@
+.vscode
+example_client
+object_store
+
 # Prerequisites
 *.d
 

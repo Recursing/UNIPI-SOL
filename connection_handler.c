@@ -6,12 +6,22 @@
 #include <stdio.h>
 #include <string.h>
 #include <pthread.h>
+#include <signal.h>
 #include "server_worker.h"
 #include "utils.h"
 
+int active_workers = 0;
+pthread_mutex_t active_workers_lock = PTHREAD_MUTEX_INITIALIZER;
+pthread_cond_t active_workers_CV = PTHREAD_COND_INITIALIZER;
+
 static void print_stats()
 {
-    printf("stats placeholder!\n");
+    printf("Printing stats:\n");
+    pthread_mutex_lock(&active_workers_lock);
+    printf(" - %d active clients\n", active_workers);
+    printf(" - TODO stored objects\n");
+    printf(" - TODO storage size\n");
+    pthread_mutex_unlock(&active_workers_lock);
 }
 
 static int handle_signal(int signalpipe)
@@ -21,11 +31,12 @@ static int handle_signal(int signalpipe)
     int r = read(signalpipe, sigtype, 1);
     if (r == -1)
     {
-        perror("reading from signal pipe");
+        perror("Error reading from signal pipe, assuming T");
+        is_done = true;
     }
     else if (r == 0)
     {
-        printf("Signal handler closed before sending T");
+        fprintf(stderr, "Signal handler closed before sending T\n");
         is_done = true;
     }
     else
@@ -51,10 +62,11 @@ static void handle_connect(int socked_fd, int broadcast_termination_pipe)
     if (new_socket == -1)
     {
         perror("Accepting connection to socket");
-        exit(EXIT_FAILURE);
+        kill(getpid(), SIGTERM); // Wake up and terminate signal handler
+        return;
     }
     pthread_t worker_thread;
-    int *fds = malloc(2 * sizeof(new_socket)); // will be freed by worker
+    int *fds = calloc(2, sizeof(new_socket)); // will be freed by worker
     fds[0] = broadcast_termination_pipe;
     fds[1] = new_socket;
 
@@ -82,6 +94,7 @@ static void dispatcher_loop(int signalpipe, int socked_fd)
     while (!is_done)
     {
         err = poll(pfds, 2, -1);
+        // printf("Polled something! %d %d\n", pfds[0].revents, pfds[1].revents);
         if (err == -1)
         {
             perror("Polling signals and socket");
@@ -90,19 +103,24 @@ static void dispatcher_loop(int signalpipe, int socked_fd)
         {
             is_done = handle_signal(signalpipe);
         }
-        if (pfds[1].revents & POLLIN)
+        else if (pfds[1].revents & POLLIN)
         {
             handle_connect(socked_fd, broadcast_termination_pipe[0]);
         }
-        if (pfds[1].revents == POLLHUP)
+        else if (pfds[1].revents == POLLHUP)
         {
             perror("socket POLLHUP");
-            exit(EXIT_FAILURE);
+            is_done = true;
         }
     }
     close(signalpipe);
     write(broadcast_termination_pipe[1], "T", 1);
-    // TODO wait for all threads to close
+
+    pthread_mutex_lock(&active_workers_lock);
+    while (active_workers > 0)
+        pthread_cond_wait(&active_workers_CV, &active_workers_lock);
+    pthread_mutex_unlock(&active_workers_lock);
+
     close(broadcast_termination_pipe[0]);
     close(broadcast_termination_pipe[1]);
 }
@@ -122,7 +140,7 @@ static int create_socket()
     err = bind(fd, (struct sockaddr *)&address, sizeof(address));
     if (err == -1)
     {
-        perror("Error binding socket");
+        perror("Error binding socket to objstore.sock");
         return -1;
     }
     err = listen(fd, SOMAXCONN);
@@ -140,7 +158,9 @@ void *handle_connections(void *spipe)
     int socket_fd = create_socket();
     if (socket_fd == -1)
     {
-        exit(EXIT_FAILURE);
+        free(spipe);
+        kill(getpid(), SIGTERM); // Wake up and terminate signal handler
+        return NULL;
     }
     dispatcher_loop(signalpipe, socket_fd);
     int err;

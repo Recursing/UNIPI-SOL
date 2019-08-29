@@ -48,12 +48,17 @@ void *handle_signals(void *spipe)
         err |= sigaddset(&sigmask, SIGPIPE);
         if (err != 0)
         {
-            fprintf(stderr, "error setting signal mask\n");
+            print_error_n(err, "error setting signal handler mask\n");
+            sig = SIGTERM;
         }
-        err = sigwait(&sigmask, &sig);
-        if (err != 0)
+        else
         {
-            handle_error_n(err, "calling sigwait in signal handler");
+            err = sigwait(&sigmask, &sig);
+            if (err != 0)
+            {
+                print_error_n(err, "calling sigwait in signal handler\n");
+                sig = SIGTERM;
+            }
         }
     } while (handle_signal(sig, signalpipe));
     close(signalpipe);
