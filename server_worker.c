@@ -10,24 +10,26 @@
 #include "utils.h"
 #include "connection_handler.h"
 
-#define BUFFERSIZE 1024
-#define MAX_KOs 10000 // MAX number of errors per client
+#define BUFFERSIZE 1024 // Size of buffer used for reading socket
+#define MAX_KOs 10000   // MAX number of errors per client
 
 static __thread int is_done = false;
 static __thread char buffer[BUFFERSIZE + 1] = {0}; // Buffer for socket reads
 static __thread int buffer_head = 0;               // Current head of buffer
-static __thread int store_left = 0;                // Bytes left to store
+static __thread int store_left = 0;                // Bytes left to store, iff > 0 worker is storing
 static __thread int store_fd = -1;                 // Fd where to store those bytes
-static __thread char *store_filepath = NULL;       // To unlink in case of termination while storing
+static __thread char *store_filepath = NULL;       // To delete partial file in case of termination while storing
 static __thread int socket = -1;                   // Socket fd
 static __thread char *folder_name = NULL;          // Name of client
 
+// Clear buffer contents and reset head
 static void clear_buffer()
 {
     memset(buffer, 0, sizeof(buffer));
     buffer_head = 0;
 }
 
+// Check if buffer contains header (checks for " \n")
 static int header_in_buffer()
 {
     for (int i = 4; i < buffer_head; i++)
@@ -45,9 +47,10 @@ static int header_in_buffer()
     return false;
 }
 
+// Writes "OK \n" to socket
 static void send_ok()
 {
-    printf("Sending ok\n");
+    // printf("Sending ok\n");
     clear_buffer();
     int err = write_all(socket, "OK \n", 5);
     if (err == -1)
@@ -56,12 +59,19 @@ static void send_ok()
     }
 }
 
+// Writes "KO message \n" to socket
 static void send_ko(char *message)
 {
-    printf("Sending ko %s \n", message);
+    // printf("Sending ko %s \n", message);
     clear_buffer();
-    int msg_len = strlen(message) + strlen(" KO \n") + 1;
-    char *full_message = malloc(msg_len);
+    int msg_len = strlen(message) + strlen("KO  \n");
+    char *full_message = malloc(msg_len + 1);
+    if (full_message == NULL)
+    {
+        perror("Cannot malloc to send ko");
+        is_done = true;
+        return;
+    }
     strcpy(full_message, "KO ");
     strcat(full_message, message);
     strcat(full_message, " \n");
@@ -73,17 +83,20 @@ static void send_ko(char *message)
     free(full_message);
 }
 
+// Check if buffer starts with the given command
 static int valid_command(char *wanted_command, int command_len)
 {
     if (strncmp(buffer, wanted_command, command_len) != 0)
     {
-        printf("Invalid command in buffer %s", buffer);
+        printf("Invalid command in buffer %s\n", buffer);
         send_ko("Invalid command in header");
         return false;
     }
     return true;
 }
 
+// Get name from buffer, between the command and a space
+// Returns NULL if name is not a valid POSIX filename or there are errors
 static char *get_name(char *wanted_command)
 {
     int command_len = strlen(wanted_command);
@@ -91,7 +104,13 @@ static char *get_name(char *wanted_command)
     {
         return NULL;
     }
-    char *name = malloc(MAX_FILENAME_LEN);
+    char *name = malloc(MAX_FILENAME_LEN + 1);
+    if (name == NULL)
+    {
+        perror("Cannot malloc to get name");
+        is_done = true;
+        return NULL;
+    }
     int i;
     for (i = 0; i < MAX_FILENAME_LEN && (buffer[command_len + i] != ' '); i++)
     {
@@ -117,7 +136,7 @@ static char *get_name(char *wanted_command)
         return NULL;
     }
     name[i] = '\0';
-    if ((strcmp(name, ".") == 0) || (strcmp(name, "..") == 0) || (strcmp(name, ".lock") == 0))
+    if ((strcmp(name, ".") == 0) || (strcmp(name, "..") == 0) || (strcmp(name, LOCKFILENAME) == 0))
     {
         send_ko("., .. and .lock are reserved names");
         free(name);
@@ -126,6 +145,7 @@ static char *get_name(char *wanted_command)
     return name;
 }
 
+// Create folder and lockfile on register
 static void handle_register()
 {
     char *name = get_name("REGISTER ");
@@ -136,6 +156,12 @@ static void handle_register()
 
     printf("Registering %s\n", name);
     folder_name = malloc(strlen(name) + strlen(STORAGEPATH) + 1);
+    if (folder_name == NULL)
+    {
+        perror("Cannot malloc to set folder name");
+        is_done = true;
+        return;
+    }
     strcpy(folder_name, STORAGEPATH);
     strcat(folder_name, name);
     free(name);
@@ -152,9 +178,16 @@ static void handle_register()
         }
     }
 
-    char *lockfile_name = malloc(strlen(folder_name) + strlen("/.lock") + 1);
+    char *lockfile_name = malloc(strlen(folder_name) + strlen(LOCKFILENAME) + 2);
+    if (lockfile_name == NULL)
+    {
+        perror("Cannot malloc for lock_file name");
+        is_done = true;
+        return;
+    }
     strcpy(lockfile_name, folder_name);
-    strcat(lockfile_name, "/.lock");
+    strcat(lockfile_name, "/");
+    strcat(lockfile_name, LOCKFILENAME);
 
     // If O_CREAT and O_EXCL are set, open() shall fail if the file exists.
     // The check for the existence of the file and the creation of the file if it does not exist
@@ -242,6 +275,13 @@ static void handle_store()
     }
 
     char *filepath = malloc(strlen(folder_name) + strlen(name) + 2);
+    if (filepath == NULL)
+    {
+        perror("Cannot malloc to set filepath");
+        is_done = true;
+        free(name);
+        return;
+    }
     strcpy(filepath, folder_name);
     strcat(filepath, "/");
     strcat(filepath, name);
@@ -249,12 +289,13 @@ static void handle_store()
     int fd = open(filepath, O_WRONLY | O_CREAT | O_EXCL, 0600);
     if (fd == -1)
     {
-        store_left = len - (buffer_head - data_start); // Need to read bytes anyway, to clear socket
+        // Need to read bytes anyway, to clear socket
+        store_left = len - (buffer_head - data_start);
         if (store_left < 0)
             store_left = 0;
-        if (errno == EEXIST) // TODO should I allow overwrites?
+        if (errno == EEXIST) // Don't allow overwrites, harder to implement but safer
         {
-            perror("File with same name already exists");
+            printf("Trying to overwrite file\n");
             if (store_left == 0)
             {
                 send_ko("Another object is stored with the same name");
@@ -263,7 +304,6 @@ static void handle_store()
         }
         else
         {
-            printf("OH NOES!\n");
             perror("Cannot create storage file");
             if (store_left == 0)
             {
@@ -286,6 +326,13 @@ static void handle_store()
     {
         store_fd = fd;
         store_filepath = malloc(strlen(filepath) + 1);
+        if (store_filepath == NULL)
+        {
+            perror("Cannot malloc to save file path");
+            is_done = true;
+            free(filepath);
+            return;
+        }
         strcpy(store_filepath, filepath);
     }
     if (buffer_head > data_start && len > 0)
@@ -298,7 +345,8 @@ static void handle_store()
         {
             perror("Writing to storage");
             close_store_file();
-            fprintf(stderr, "writing start to storage %s %s\n", folder_name, filepath);
+            fprintf(stderr, "writing start to storage %s %s\n",
+                    folder_name, filepath);
             send_ko("Error writing file to disk");
         }
         store_left -= to_write;
@@ -316,14 +364,20 @@ static void handle_store()
     clear_buffer();
 }
 
+// Send retrieved object to client
 static void send_retrieve(char *data, ssize_t len)
 {
-    printf("Sending back %lu bytes \n", len);
+    // printf("Sending back %lu bytes \n", len);
     char len_string[MAX_OBJ_LEN_DIGITS];
     sprintf(len_string, "%lu", len);
-    clear_buffer();
     int header_len = strlen("DATA  \n ") + strlen(len_string);
     char *header_message = malloc(header_len + 1);
+    if (header_message == NULL)
+    {
+        perror("Cannot malloc to make retrieve header");
+        is_done = true;
+        return;
+    }
     strcpy(header_message, "DATA ");
     strcat(header_message, len_string);
     strcat(header_message, " \n ");
@@ -335,13 +389,16 @@ static void send_retrieve(char *data, ssize_t len)
         send_ko("Error sending header back");
     }
     free(header_message);
-    err = write_all(socket, data, len);
-    if (err == -1)
+    if (len > 0)
     {
-        perror("Writing retrieved data to socket");
-        send_ko("Error sending data back");
+        err = write_all(socket, data, len);
+        if (err == -1)
+        {
+            perror("Writing retrieved data to socket");
+            send_ko("Error sending data back");
+        }
     }
-    printf("I think I sent %lu bytes back\n", len);
+    // printf("I think I sent %lu bytes back\n", len);
 }
 
 static void handle_retrieve()
@@ -352,6 +409,12 @@ static void handle_retrieve()
         return;
     }
     char *filepath = malloc(strlen(folder_name) + strlen(name) + 2);
+    if (filepath == NULL)
+    {
+        perror("Cannot malloc to set retrieve filepath");
+        is_done = true;
+        return;
+    }
     strcpy(filepath, folder_name);
     strcat(filepath, "/");
     strcat(filepath, name);
@@ -360,7 +423,7 @@ static void handle_retrieve()
     int fd = open(filepath, O_RDONLY);
     if (fd < 0)
     {
-        perror("Deleting file");
+        perror("Retrieving file");
         if (errno == ENOENT)
         {
             send_ko("Object does not exist");
@@ -383,20 +446,31 @@ static void handle_retrieve()
         close(fd);
         return;
     }
-    // TODO handle empty files
-    char *temp_buffer = malloc(s.st_size); // TODO don't store eveything in memory
-    err = read(fd, temp_buffer, s.st_size);
-    if (err < 0)
+
+    // Assume can store eveything in memory since it's done by os_retrieve
+    char *temp_buffer = malloc(s.st_size);
+    if (s.st_size > 0 && temp_buffer == NULL)
     {
-        perror("Copying file to memory");
-        free(filepath);
-        free(temp_buffer);
-        close(fd);
-        send_ko("Error reading object to memory");
+        perror("Cannot malloc to copy to memory the file to retrieve");
+        is_done = true;
         return;
     }
+    if (s.st_size > 0)
+    {
+        err = read(fd, temp_buffer, s.st_size);
+        if (err < 0)
+        {
+            perror("Copying file to memory");
+            free(filepath);
+            free(temp_buffer);
+            close(fd);
+            send_ko("Error reading object to memory");
+            return;
+        }
+    }
     send_retrieve(temp_buffer, s.st_size);
-    free(temp_buffer);
+    if (temp_buffer != NULL)
+        free(temp_buffer);
     free(filepath);
     close(fd);
     clear_buffer();
@@ -404,13 +478,18 @@ static void handle_retrieve()
 
 static void handle_delete()
 {
-    printf("Handling DeLete\n");
     char *name = get_name("DELETE ");
     if (name == NULL)
     {
         return;
     }
     char *filepath = malloc(strlen(folder_name) + strlen(name) + 2);
+    if (filepath == NULL)
+    {
+        perror("Cannot malloc save filename to delete");
+        is_done = true;
+        return;
+    }
     strcpy(filepath, folder_name);
     strcat(filepath, "/");
     strcat(filepath, name);
@@ -438,6 +517,7 @@ static void handle_leave()
     is_done = true;
 }
 
+// Dump buffer content to store_fd
 static void continue_store()
 {
     // printf("Storing %d bytes...\n", buffer_head);
@@ -449,7 +529,7 @@ static void continue_store()
         store_left -= to_write;
         if (store_left <= 0)
         {
-            fprintf(stderr, "Dumped invalid store...\n");
+            printf("Dumped invalid store...\n");
             if (store_fd == -1)
                 send_ko("Cannot create file in storage directory");
             else if (store_fd == -2)
@@ -458,6 +538,7 @@ static void continue_store()
         clear_buffer();
         return;
     }
+
     int err = write_all(store_fd, buffer, to_write);
     if (err == -1)
     {
@@ -465,7 +546,9 @@ static void continue_store()
         close_store_file();
         perror("Continuing writing file to disk");
         send_ko("Error storing file");
+        return;
     }
+
     store_left -= to_write;
     if (store_left < 0)
     {
@@ -479,15 +562,10 @@ static void continue_store()
     clear_buffer();
 }
 
-/*static void continue_retrieve()
-{
-}*/
-
+// Called on POLLIN in socketfd
 static void handle_socket_message()
 {
-    printf("Buffer head at: %d\n", buffer_head);
     int read_len = read(socket, buffer + buffer_head, BUFFERSIZE - buffer_head);
-    // printf("||%d %d||%s", buffer_head, read_len, buffer);
 
     if (read_len == -1)
     {
@@ -502,25 +580,29 @@ static void handle_socket_message()
         is_done = true;
         return;
     }
+
     buffer_head += read_len;
     if (store_left > 0) // Dump everything that can be read to filesystem
     {
         continue_store();
         return;
     }
-    if (!header_in_buffer()) // Just wait for the rest of the header to be read by the buffer
+
+    else if (!header_in_buffer()) // Just wait for the rest of the header to be read by the buffer
     {
-        if (buffer_head == BUFFERSIZE) // buffer full with no header and not storing, garbage data
-            // send_ko("Invalid message"); // can choke socket if client does not read
+        // buffer full with no header and not storing, garbage data, ignore it
+        if (buffer_head == BUFFERSIZE)
             clear_buffer();
         return;
     }
-    if (buffer[2] != 'G' && folder_name == NULL && buffer[2] != 'L')
+
+    else if (buffer[2] != 'G' && folder_name == NULL && buffer[2] != 'L')
     {
         // printf("Buffer contains %s with len %d\n", buffer, buffer_head);
-        send_ko("You must REGISTER before sending a command"); // can choke socket if client does not read
+        send_ko("You must REGISTER before sending a command");
         return;
     }
+
     switch (buffer[2])
     {
     case '\0':
@@ -546,7 +628,7 @@ static void handle_socket_message()
     }
 }
 
-// fds[0] is a pipe fd for recieving a termination signal
+// fds[0] is a pipe fd for recieving a termination signal via POLLIN
 // fds[1] is the socket fd for handling client communication
 static void worker_loop(int *fds)
 {
@@ -563,7 +645,7 @@ static void worker_loop(int *fds)
 
     while (!is_done)
     {
-        printf(".");
+        // printf(".");
         err = poll(pfds, 2, -1);
         if (err == -1)
         {
@@ -571,33 +653,35 @@ static void worker_loop(int *fds)
         }
 
         if (pfds[0].revents & POLLIN) // Recieved termination signal
-        {
-            printf("Recieved TERM\n");
-            is_done = true; // Don't read so everybody can recieve it
+        {                             // Exit immediatly without checking for messages in socket
+            printf("Worker recieved TERM\n");
+            is_done = true; // Don't read pipe so everybody recieves POLLIN
         }
-        else if (pfds[0].revents & (POLLERR | POLLHUP | POLLNVAL)) // Errors with the termination signal
-        {
-            fprintf(stderr, "Error %d polling signal pipe from worker", pfds[0].revents);
+        else if (pfds[0].revents & (POLLERR | POLLHUP | POLLNVAL))
+        { // Errors with the termination signal
+            fprintf(stderr, "Error %d polling signal pipe from worker\n", pfds[0].revents);
             is_done = true;
         }
-        else if (pfds[1].revents & POLLIN) // Don't check for messages if it's closing / closed
+        else if (pfds[1].revents & POLLIN)
         {
             handle_socket_message();
         }
-        else if (pfds[1].revents & POLLHUP) // socket has no writers and there's nothing more to read
-        {
+        else if (pfds[1].revents & POLLHUP)
+        { // Socket has no writers and there's nothing to read in it
             printf("Worker terminating for socket POLLHUP\n");
             is_done = true;
         }
         else
         {
-            printf("Unexpected events %d %d\n", pfds[0].revents, pfds[1].revents);
+            fprintf(stderr, "Unexpected events %d %d\n", pfds[0].revents, pfds[1].revents);
             is_done = true;
         }
     }
+    close(fds[1]);
 }
 
-void cleanup()
+// Called before exiting, delete lockfile and partially stored files
+static void cleanup()
 {
     if (folder_name == NULL)
     {
@@ -606,12 +690,20 @@ void cleanup()
     if (store_left > 0 && store_fd > 0 && store_filepath != NULL)
     {
         printf("Deleting partially stored file :( %s\n", store_filepath);
+        send_ko("Recieved TERM while storing");
         unlink(store_filepath);
     }
     close_store_file();
-    char *lockfile_name = malloc(strlen(folder_name) + strlen("/.lock") + 1);
+    char *lockfile_name = malloc(strlen(folder_name) + strlen(LOCKFILENAME) + 2);
+    if (lockfile_name == NULL)
+    {
+        perror("Cannot malloc at cleanup");
+        free(folder_name);
+        return;
+    }
     strcpy(lockfile_name, folder_name);
-    strcat(lockfile_name, "/.lock");
+    strcat(lockfile_name, "/");
+    strcat(lockfile_name, LOCKFILENAME);
     int err = unlink(lockfile_name);
     if (err == -1)
     {
@@ -621,14 +713,18 @@ void cleanup()
     free(folder_name);
 }
 
+// Thread entry point
 void *start_worker(void *fds)
 {
     pthread_mutex_lock(&active_workers_lock);
     active_workers++;
     pthread_mutex_unlock(&active_workers_lock);
+
     printf("Starting worker\n");
+
     int *file_descriptors = (int *)fds;
     worker_loop(file_descriptors);
+
     if (folder_name != NULL)
         printf("Ending worker %s\n", folder_name);
     else
@@ -636,6 +732,7 @@ void *start_worker(void *fds)
 
     cleanup();
     free(fds);
+
     pthread_mutex_lock(&active_workers_lock);
     active_workers--;
     if (active_workers <= 0)
@@ -643,5 +740,6 @@ void *start_worker(void *fds)
         pthread_cond_signal(&active_workers_CV);
     }
     pthread_mutex_unlock(&active_workers_lock);
+
     return NULL;
 }

@@ -7,6 +7,9 @@
 #include "signal_handler.h"
 #include "connection_handler.h"
 
+// Create and start a thread to handle signals
+// Will write recieved signals to the given pipe end
+// Returns the created thread id or 0 for error
 static pthread_t start_signal_handler(int signal_pipe)
 {
     int err;
@@ -24,10 +27,10 @@ static pthread_t start_signal_handler(int signal_pipe)
         return 0; // 0 cannot be a valid thread id
     }
     pthread_t signal_thread;
-    int *spipe = malloc(sizeof(*spipe));
+    int *spipe = malloc(sizeof(*spipe)); // Will be freed by thread
     if (spipe == NULL)
     {
-        fprintf(stderr, "cannot malloc");
+        fprintf(stderr, "cannot malloc\n");
         return 0; // 0 cannot be a valid thread id
     }
     *spipe = signal_pipe;
@@ -40,6 +43,9 @@ static pthread_t start_signal_handler(int signal_pipe)
     return signal_thread;
 }
 
+// Create and start a thread to handle connections
+// Will read recieved signals from the given pipe end
+// Returns the created thread id or 0 for error
 static pthread_t start_connection_handler(int signal_pipe)
 {
     int err;
@@ -60,18 +66,22 @@ static pthread_t start_connection_handler(int signal_pipe)
     return server_thread;
 }
 
+// Start and join connection and signal handling threads
 int main(int argc, char *argv[])
 {
     int err;
     printf("Starting object store...\n");
     printf("Process ID : %d\n", getpid());
 
+    // Create storage folder if it doesn't exist
     err = mkdir(STORAGEPATH, 0700);
     if (err < 0 && errno != EEXIST)
     {
         fprintf(stderr, "Error creating storage folder\n");
         return 1;
     }
+
+    // Pipe to send signals to connection handler
     int signal_pipe[2];
     err = pipe(signal_pipe);
     if (err == -1)
@@ -79,12 +89,15 @@ int main(int argc, char *argv[])
         perror("Creating pipe for signal handling\n");
         return 1;
     }
-    pthread_t signal_thread = start_signal_handler(signal_pipe[1]); // writing end
+
+    // signal thread gets the writing end
+    pthread_t signal_thread = start_signal_handler(signal_pipe[1]);
     if (signal_thread == 0)
-    {
+    { // Error has been printed in function
         return 1;
     }
-    pthread_t connection_thread = start_connection_handler(signal_pipe[0]); // reading end
+
+    pthread_t connection_thread = start_connection_handler(signal_pipe[0]);
     if (connection_thread == 0)
     {
         kill(getpid(), SIGTERM); // Wake up and terminate signal handler
@@ -95,14 +108,16 @@ int main(int argc, char *argv[])
         if (err != 0)
         {
             print_error_n(err, "joining server thread");
-            kill(getpid(), SIGTERM); // Wake up and terminate signal handler
+            kill(getpid(), SIGTERM);
         }
     }
+
     err = pthread_join(signal_thread, NULL);
     if (err != 0)
     {
         print_error_n(err, "joining signal thread");
         return 1;
     }
+
     return 0;
 }

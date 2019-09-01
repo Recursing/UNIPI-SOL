@@ -27,4 +27,12 @@ int os_delete(char *name);
 // Restituisce true se la disconnessione ha avuto successo, false in caso contrario.
 int os_disconnect();
 
+// Restituisce il numero di bytes ricevuti dall'ultima retrieve
+// Necessaria per distinguere oggetti vuoti da errori
+// e per gestire oggetti di dimensione non salvata
+int get_retrieve_len();
+
+// Se vale true gli errori di overwrite vengono ignorati
+// in modo da poter salvare oggetti solo se assenti senza ricevere errori
+extern int ignore_overwrite_errors;
 #endif

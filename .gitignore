@@ -1,4 +1,5 @@
-.vscode
+.vscode/
+data/
 example_client
 object_store
 

@@ -4,31 +4,34 @@
 #include <unistd.h>
 #include "utils.h"
 
+// Write signal code to pipe
+// Returns true if thread should keep listening, false if it should exit
 static int handle_signal(int sigtype, int signalpipe)
 {
-    int w;
+    int write_res;
     switch (sigtype)
     {
     case SIGHUP:
     case SIGINT:
     case SIGTERM:
-        write(1, "Recieved termination signal, quitting...\n", 42);
-        w = write(signalpipe, "T", 1);
-        if (w == -1)
+        write(1, "Recieved termination signal, quitting...\n", 41);
+        write_res = write(signalpipe, "T", 1);
+        if (write_res == -1)
             perror("Error writing T to signal pipe");
-
         return false;
+
     case SIGUSR1:
-        w = write(signalpipe, "S", 1);
-        if (w == -1)
+        write_res = write(signalpipe, "S", 1);
+        if (write_res == -1)
             perror("Error writing S to signal pipe");
         write(STDOUT_FILENO, "Recieved SIGUSR1\n", 18);
         return true;
+
     case SIGPIPE:
-        write(STDERR_FILENO, "Received signal SIGPIPE!\n", 26);
+        write(STDERR_FILENO, "Received signal SIGPIPE!\n", 25);
         return true;
     }
-    write(STDOUT_FILENO, "Unhandled signal, quitting...\n", 31);
+    write(STDOUT_FILENO, "Unhandled signal, quitting...\n", 30);
     return false;
 }
 

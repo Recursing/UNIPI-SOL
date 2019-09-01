@@ -9,21 +9,34 @@
 #include <signal.h>
 #include "server_worker.h"
 #include "utils.h"
+#include "stats.h"
 
+// Using shared memory to count active workers
+// Needed so that the handler doesn't need to join all of them explicitly
+// And can just wait for active_workers to be set to 0
+// Without keeping a list of thread_ids in a data structure
 int active_workers = 0;
 pthread_mutex_t active_workers_lock = PTHREAD_MUTEX_INITIALIZER;
 pthread_cond_t active_workers_CV = PTHREAD_COND_INITIALIZER;
 
-static void print_stats()
+// Create and start a detached thread to gather and print statistics
+static void handle_stats()
 {
-    printf("Printing stats:\n");
-    pthread_mutex_lock(&active_workers_lock);
-    printf(" - %d active clients\n", active_workers);
-    printf(" - TODO stored objects\n");
-    printf(" - TODO storage size\n");
-    pthread_mutex_unlock(&active_workers_lock);
+    pthread_t stats_thread;
+    int err = pthread_create(&stats_thread, NULL, print_stats, NULL);
+    if (err != 0)
+    {
+        print_error_n(err, "creating stats thread");
+    }
+    err = pthread_detach(stats_thread); // So that I don't have to join it
+    if (err != 0)
+    {
+        print_error_n(err, "detatching stats thread");
+    }
 }
 
+// Read and handle signal recieved via the signal pipe
+// Return true if it's the connection handler should terminate, false otherwise
 static int handle_signal(int signalpipe)
 {
     int is_done = false;
@@ -47,7 +60,7 @@ static int handle_signal(int signalpipe)
             is_done = true;
             break;
         case 'S':
-            print_stats();
+            handle_stats();
             break;
         }
     }
@@ -55,25 +68,39 @@ static int handle_signal(int signalpipe)
     return is_done;
 }
 
+// Handle a new connection: create a new socket fd, create and start a new worker
 static void handle_connect(int socked_fd, int broadcast_termination_pipe)
 {
     int new_socket;
     new_socket = accept(socked_fd, NULL, NULL);
     if (new_socket == -1)
     {
-        perror("Accepting connection to socket");
+        fprintf(stderr, "ERROR with %d workers active\n", active_workers);
+        perror("Accepting connection to socket. SENDING TERM");
         kill(getpid(), SIGTERM); // Wake up and terminate signal handler
         return;
     }
+
     pthread_t worker_thread;
     int *fds = calloc(2, sizeof(new_socket)); // will be freed by worker
     fds[0] = broadcast_termination_pipe;
     fds[1] = new_socket;
 
-    pthread_create(&worker_thread, NULL, start_worker, (void *)fds);
-    pthread_detach(worker_thread); // So that valgrind doesn't complain and I don't have to join
+    int err = pthread_create(&worker_thread, NULL, start_worker, (void *)fds);
+    if (err != 0)
+    {
+        print_error_n(err, "creating worker thread");
+        fprintf(stderr, "ERROR creating worker thread. SENDING TERM\n");
+        kill(getpid(), SIGTERM); // Wake up and terminate signal handler
+    }
+    err = pthread_detach(worker_thread); // So that I don't have to join it
+    if (err != 0)
+    {
+        print_error_n(err, "detatching worker thread");
+    }
 }
 
+// Main loop, poll on signal pipe and socket
 static void dispatcher_loop(int signalpipe, int socked_fd)
 {
     int is_done = false;
@@ -114,8 +141,12 @@ static void dispatcher_loop(int signalpipe, int socked_fd)
         }
     }
     close(signalpipe);
+
+    // Send termination byte to all workers
+    // They will not read it but will recieve POLLIN on their end of the pipe and terminate
     write(broadcast_termination_pipe[1], "T", 1);
 
+    // Wait for all workers to exit
     pthread_mutex_lock(&active_workers_lock);
     while (active_workers > 0)
         pthread_cond_wait(&active_workers_CV, &active_workers_lock);
@@ -125,6 +156,7 @@ static void dispatcher_loop(int signalpipe, int socked_fd)
     close(broadcast_termination_pipe[1]);
 }
 
+// Create the objstore.sock socket
 static int create_socket()
 {
     int fd = socket(AF_UNIX, SOCK_STREAM, 0);
@@ -152,6 +184,7 @@ static int create_socket()
     return fd;
 }
 
+// Thread entry point
 void *handle_connections(void *spipe)
 {
     int signalpipe = *((int *)spipe);
@@ -162,13 +195,17 @@ void *handle_connections(void *spipe)
         kill(getpid(), SIGTERM); // Wake up and terminate signal handler
         return NULL;
     }
+
     dispatcher_loop(signalpipe, socket_fd);
+
     int err;
-    err = unlink(SOCKPATH);
+    err = unlink(SOCKPATH); // Delete socket
     if (err == -1)
     {
         perror("unlinking socket");
     }
+
+    close(socket_fd);
     free(spipe);
     return NULL;
 }
