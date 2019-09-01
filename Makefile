@@ -29,8 +29,7 @@ test_client: test_client.c access_library.o utils.o
 
 clean		: 
 	rm -f $(TARGETS)
-	\rm -f *.o *~ *.a
+	\rm -f *.o *~ *.a *.log
 
 test: all
-	@./object_store &
 	@./test.sh > testout.log

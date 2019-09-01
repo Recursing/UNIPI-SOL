@@ -1,3 +1,7 @@
+./object_store > storeout.log &
+server_pid=$!
+
+#!/usr/bin/env bash
 STARTMILLIS=`date +%s%3N`
 
 # Number of test processes exiting with non 0 status
@@ -46,4 +50,7 @@ echo Finished test 2 and 3
 echo $FAIL total fails
 
 ENDMILLIS=`date +%s%3N`
-echo Finished all in $((ENDMILLIS-STARTMILLIS)) ms
+echo "Finished all in $((ENDMILLIS-STARTMILLIS)) ms"
+
+# Kill server if it was started by the test
+kill $server_pid

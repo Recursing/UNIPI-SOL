@@ -14,24 +14,26 @@ static int handle_signal(int sigtype, int signalpipe)
     case SIGHUP:
     case SIGINT:
     case SIGTERM:
-        write(1, "Recieved termination signal, quitting...\n", 41);
         write_res = write(signalpipe, "T", 1);
         if (write_res == -1)
             perror("Error writing T to signal pipe");
+        write_res = write(1, "Recieved termination signal, quitting...\n", 41);
         return false;
 
     case SIGUSR1:
         write_res = write(signalpipe, "S", 1);
         if (write_res == -1)
             perror("Error writing S to signal pipe");
-        write(STDOUT_FILENO, "Recieved SIGUSR1\n", 18);
+        write_res = write(STDOUT_FILENO, "Recieved SIGUSR1\n", 18);
         return true;
 
     case SIGPIPE:
-        write(STDERR_FILENO, "Received signal SIGPIPE!\n", 25);
+        write_res = write(STDERR_FILENO, "Received signal SIGPIPE!\n", 25);
         return true;
     }
-    write(STDOUT_FILENO, "Unhandled signal, quitting...\n", 30);
+    write_res = write(STDOUT_FILENO, "Unhandled signal, quitting...\n", 30);
+    if (write_res == -1)
+        perror("Error writing signal handling to STDOUT or STDERR");
     return false;
 }
 

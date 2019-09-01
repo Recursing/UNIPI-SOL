@@ -144,7 +144,11 @@ static void dispatcher_loop(int signalpipe, int socked_fd)
 
     // Send termination byte to all workers
     // They will not read it but will recieve POLLIN on their end of the pipe and terminate
-    write(broadcast_termination_pipe[1], "T", 1);
+    int write_err = write(broadcast_termination_pipe[1], "T", 1);
+    if (write_err < 0)
+    {
+        perror("Writing termination byte to broadcast_termination_pipe");
+    }
 
     // Wait for all workers to exit
     pthread_mutex_lock(&active_workers_lock);
