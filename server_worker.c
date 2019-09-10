@@ -11,7 +11,6 @@
 #include "connection_handler.h"
 
 #define BUFFERSIZE 1024 // Size of buffer used for reading socket
-#define MAX_KOs 10000   // MAX number of errors per client
 
 static __thread int is_done = false;
 static __thread char buffer[BUFFERSIZE + 1] = {0}; // Buffer for socket reads

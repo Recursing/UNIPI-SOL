@@ -1,31 +1,26 @@
 CC		=  gcc
 CFLAGS	+= -std=c99 -Wall -Werror -pedantic -O3
 LIBS    = -lpthread
-INCLUDES	= -I. -D_POSIX_C_SOURCE=200809L
-LDFLAGS 	= -L.
-TARGETS = object_store test_client
-
+OPTIONS= -D_POSIX_C_SOURCE=200809L
+TARGETS = object_store libaccess.a test_client
 
 .PHONY: all clean test
-.SUFFIXES: .c .h
-
-%: %.c
-	$(CC) $(CFLAGS) $(INCLUDES) $(OPTFLAGS) -o $@ $< $(LDFLAGS) $(LIBS)
-
-%.o: %.c
-	$(CC) $(CFLAGS) $(INCLUDES) $(OPTFLAGS) -c -o $@ $<
 
 all		: $(TARGETS)
 
+%.o: %.c
+	$(CC) $(CFLAGS) $(OPTIONS) -c -o $@ $<
+
+libaccess.a: access_library.o utils.o
+	$(AR) rcvs $@ $^
+
 object_store: object_store.c signal_handler.o connection_handler.o server_worker.o stats.o utils.o
-	$(CC) $(CFLAGS) $(INCLUDES) $(OPTFLAGS) $(LDFLAGS) -o $@ $^ $(LIBS)
+	$(CC) $(CFLAGS) $(OPTIONS) -o $@ $^ $(LIBS)
 
 connection_handler.o: server_worker.o utils.o
 
-test_client: test_client.c access_library.o utils.o
-	$(CC) $(CFLAGS) $(INCLUDES) $(OPTFLAGS) $(LDFLAGS) -o $@ $^ $(LIBS)
-
-
+test_client: test_client.c libaccess.a
+	$(CC) $(CFLAGS) $(OPTIONS) -o $@ $< -L. -laccess
 
 clean		: 
 	rm -f $(TARGETS)

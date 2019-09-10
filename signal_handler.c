@@ -28,13 +28,19 @@ static int handle_signal(int sigtype, int signalpipe)
         return true;
 
     case SIGPIPE:
+        write_res = write(signalpipe, "T", 1);
+        if (write_res == -1)
+            perror("Error writing T to signal pipe");
         write_res = write(STDERR_FILENO, "Received signal SIGPIPE!\n", 25);
         return true;
     }
+    write_res = write(signalpipe, "T", 1);
+    if (write_res == -1)
+        perror("Error writing T to signal pipe");
     write_res = write(STDOUT_FILENO, "Unhandled signal, quitting...\n", 30);
     if (write_res == -1)
         perror("Error writing signal handling to STDOUT or STDERR");
-    return false;
+    return true;
 }
 
 void *handle_signals(void *spipe)

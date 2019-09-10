@@ -18,7 +18,7 @@ static pthread_t start_signal_handler(int signal_pipe)
     err = sigfillset(&blocked_signals);
     if (err != 0)
     {
-        fprintf(stderr, "filling signal set\n");
+        fprintf(stderr, "Error filling signal set\n");
     }
     err = pthread_sigmask(SIG_BLOCK, &blocked_signals, NULL);
     if (err != 0)
@@ -30,7 +30,7 @@ static pthread_t start_signal_handler(int signal_pipe)
     int *spipe = malloc(sizeof(*spipe)); // Will be freed by thread
     if (spipe == NULL)
     {
-        fprintf(stderr, "cannot malloc\n");
+        fprintf(stderr, "Cannot malloc\n");
         return 0; // 0 cannot be a valid thread id
     }
     *spipe = signal_pipe;
